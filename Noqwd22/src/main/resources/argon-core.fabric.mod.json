@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "argon-core",
+  "version": "${version}",
+  "name": "Argon Core",
+  "description": "Argon core module — mixins, modules, event system",
+  "authors": ["lvstrng"],
+  "license": "MIT",
+  "icon": "assets/immediatelyfast/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "main": [
+      "dev.lvstrng.argon.Main"
+    ]
+  },
+  "mixins": [
+    "argon.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api":   "*",
+    "minecraft":    "~1.21",
+    "java":         ">=21",
+    "argon":        "${version}"
+  }
+}

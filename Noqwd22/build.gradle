@@ -1,0 +1,183 @@
+plugins {
+    id 'fabric-loom' version '1.6-SNAPSHOT'
+    id 'maven-publish'
+}
+
+// ── Project coords ─────────────────────────────────────────────────────────────
+version = project.mod_version
+group   = project.maven_group
+base { archivesName = project.archives_base_name }
+
+// ── Repositories ───────────────────────────────────────────────────────────────
+repositories {
+    maven { url 'https://maven.fabricmc.net/' }
+    mavenCentral()
+}
+
+// ── Shadow config (for bundled libs) ──────────────────────────────────────────
+configurations { shadow }
+
+// ── Dependencies ───────────────────────────────────────────────────────────────
+dependencies {
+    minecraft         "com.mojang:minecraft:${project.minecraft_version}"
+    mappings          "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    compileOnly         'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+    compileOnly files("lib/annotations-1.0.6.jar")
+}
+
+// ── Java toolchain ─────────────────────────────────────────────────────────────
+def targetJavaVersion = 21
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible())
+        options.release.set(targetJavaVersion)
+}
+java {
+    def jv = JavaVersion.toVersion(targetJavaVersion)
+    if (JavaVersion.current() < jv)
+        toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+    withSourcesJar()
+}
+
+// ── processResources — inject version / loader_version into all mod JSONs ──────
+processResources {
+    inputs.property "version",          project.version
+    inputs.property "loader_version",   project.loader_version
+    filteringCharset "UTF-8"
+
+    // Outer wrapper fabric.mod.json
+    filesMatching("fabric.mod.json") {
+        expand version: project.version, loader_version: project.loader_version
+    }
+    // Inner core fabric.mod.json (we rename it when packaging the core jar)
+    filesMatching("argon-core.fabric.mod.json") {
+        expand version: project.version, loader_version: project.loader_version
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 1 — coreJar: package all Argon classes + argon-core.fabric.mod.json
+//           + argon.mixins.json into META-INF/jars/argon-core-<ver>.jar
+// ─────────────────────────────────────────────────────────────────────────────
+task coreJar(type: Jar, dependsOn: [compileJava, processResources]) {
+    description = "Builds the nested argon-core JAR that is embedded inside the outer argon JAR"
+    group       = "build"
+
+    archiveBaseName    = 'argon-core'
+    archiveVersion     = project.version
+    archiveClassifier  = ''
+    destinationDirectory = layout.buildDirectory.dir("libs/nested")
+
+    // All compiled classes
+    from(sourceSets.main.output.classesDirs)
+    // Resources EXCEPT the outer fabric.mod.json and the raw argon-core template;
+    // we include the processed (version-expanded) argon-core descriptor renamed to
+    // fabric.mod.json so Fabric Loader recognises the nested mod correctly.
+    from(sourceSets.main.output.resourcesDir) {
+        exclude 'fabric.mod.json'             // outer wrapper — not for the core jar
+        exclude 'argon-core.fabric.mod.json'  // raw template — we add the processed one below
+    }
+    // Processed argon-core descriptor → rename to fabric.mod.json inside the core jar
+    from(layout.buildDirectory.dir("resources/main")) {
+        include 'argon-core.fabric.mod.json'
+        rename 'argon-core.fabric.mod.json', 'fabric.mod.json'
+    }
+    // Also bundle shadowed libs if any
+    from {
+        configurations.shadow.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    // ── Inner MANIFEST.MF ──────────────────────────────────────────────────────
+    manifest {
+        attributes(
+            // Core identity
+            "Implementation-Title":   "Argon Core",
+            "Implementation-Version": project.version,
+            "Implementation-Vendor":  "lvstrng",
+
+            // Mixin bootstrap — tells SpongePowered Mixin which config to load
+            "MixinConfigs": "argon.mixins.json",
+
+            // Fabric Loader picks these up even from nested JARs
+            "Fabric-Mod-Id":      "argon-core",
+            "Fabric-Mod-Version": project.version,
+
+            // Java module hint
+            "Automatic-Module-Name": "dev.lvstrng.argon.core",
+
+            // Mixin tweaker (keeps compatibility with stand-alone Mixin agents)
+            "TweakClass": "org.spongepowered.asm.launch.MixinTweaker"
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 2 — main jar: thin outer wrapper that embeds the core jar
+// ─────────────────────────────────────────────────────────────────────────────
+jar {
+    dependsOn coreJar
+
+    // Licence file
+    from("LICENSE") { rename { "${it}_${project.archivesBaseName}" } }
+
+    // ── Embed the core jar at META-INF/jars/ ─────────────────────────────────
+    // Fabric Loader reads the outer fabric.mod.json's "jars" array and extracts
+    // nested JARs from this directory before loading any entrypoints/mixins.
+    from(coreJar.archiveFile) {
+        into 'META-INF/jars/'
+    }
+
+    // The outer fabric.mod.json (already processed by processResources)
+    // is picked up automatically from sourceSets.main.output.resourcesDir.
+    // It must NOT include any entrypoints or mixins — those live in the core jar.
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    // ── Outer MANIFEST.MF ─────────────────────────────────────────────────────
+    manifest {
+        attributes(
+            // Outer wrapper identity
+            "Implementation-Title":   project.mod_name,
+            "Implementation-Version": project.version,
+            "Implementation-Vendor":  "lvstrng",
+
+            // Class-Path entry tells the JVM class-loader where the nested core
+            // jar lives relative to this JAR's root.  At runtime Fabric Loader
+            // unpacks META-INF/jars/ before handing off to the JVM, so this path
+            // matches what the loader exposes on the class-path.
+            "Class-Path": "META-INF/jars/argon-core-${project.version}.jar",
+
+            // Outer mod identity (Fabric Loader reads these from the manifest
+            // as a fallback when fabric.mod.json substitution hasn't completed)
+            "Fabric-Mod-Id":      project.mod_id,
+            "Fabric-Mod-Version": project.version,
+
+            // No MixinConfigs here — mixins are declared inside the core jar only
+            "Automatic-Module-Name": "dev.lvstrng.argon",
+            "Built-By":             "Fabric-Loom/${project.version}"
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Publishing
+// ─────────────────────────────────────────────────────────────────────────────
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            groupId    = project.maven_group
+            artifactId = project.archives_base_name
+            version    = project.version
+            from components.java
+        }
+    }
+    repositories {
+        // maven { url = "https://your.maven.repo/releases" }
+    }
+}

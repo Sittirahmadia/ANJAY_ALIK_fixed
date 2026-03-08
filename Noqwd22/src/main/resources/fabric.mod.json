@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "argon",
+  "version": "${version}",
+  "name": "Argon",
+  "description": "Argon Ghost Client for Minecraft 1.21",
+  "authors": ["lvstrng"],
+  "license": "MIT",
+  "icon": "assets/immediatelyfast/icon.png",
+  "environment": "client",
+  "entrypoints": {},
+  "mixins": [],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api":   "*",
+    "minecraft":    "~1.21",
+    "java":         ">=21"
+  },
+  "jars": [
+    { "file": "META-INF/jars/argon-core-${version}.jar" }
+  ]
+}

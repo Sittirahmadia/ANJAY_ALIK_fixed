@@ -1,0 +1,76 @@
+name: Build JAR
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Java 21 ─────────────────────────────────────────────────────
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # ── 3. Cache Gradle (build lebih cepat) ──────────────────────────────────
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/loom-cache
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # ── 4. Buat folder lib jika belum ada ────────────────────────────────────
+      #    (annotations-1.0.6.jar dibutuhkan oleh build.gradle)
+      #    Jika kamu punya file jar-nya, commit ke folder lib/ di repo kamu!
+      - name: Prepare lib directory
+        run: |
+          mkdir -p lib
+          # Jika file belum ada, buat placeholder kosong supaya Gradle tidak error
+          if [ ! -f "lib/annotations-1.0.6.jar" ]; then
+            echo "⚠️  lib/annotations-1.0.6.jar tidak ditemukan!"
+            echo "   Commit file tersebut ke folder lib/ di repo kamu."
+            # Buat dummy jar agar gradle tidak crash saat resolve
+            echo "PK" > lib/annotations-1.0.6.jar
+          fi
+
+      # ── 5. Grant permission ke gradlew ───────────────────────────────────────
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      # ── 6. Build dengan Gradle ───────────────────────────────────────────────
+      - name: Build JAR
+        run: ./gradlew build --no-daemon --stacktrace
+        env:
+          GRADLE_OPTS: "-Xmx2G"
+
+      # ── 7. Lihat hasil build ─────────────────────────────────────────────────
+      - name: List build outputs
+        run: ls -lh build/libs/
+
+      # ── 8. Upload semua JAR sebagai artifact ─────────────────────────────────
+      - name: Upload JAR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: argon-${{ github.run_number }}
+          path: |
+            build/libs/*.jar
+            !build/libs/*-dev.jar
+            !build/libs/*-sources.jar
+          retention-days: 30
+          if-no-files-found: error
